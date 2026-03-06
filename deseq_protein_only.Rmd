@@ -1,0 +1,454 @@
+---
+title: "deseq_protein_only"
+output: html_document
+date: "2026-02-18"
+---
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(pheatmap)
+library(ggplot2)
+library(apeglm)
+library(EnhancedVolcano)
+library(biomaRt)
+```
+
+```{r}
+# Load counts
+counts_pc <- read.csv("/Volumes/Sabrina/tximport_results/all_samples_counts_matrix.csv",
+                      row.names = 1)
+
+# Clean column names
+colnames(counts_pc) <- gsub("^X", "", colnames(counts_pc))
+colnames(counts_pc) <- gsub("\\.", "-", colnames(counts_pc))
+colnames(counts_pc) <- gsub("2O", "20", colnames(counts_pc))
+
+# Replace NA with 0
+counts_pc[is.na(counts_pc)] <- 0
+
+# Ensure integers
+counts_pc <- round(counts_pc)
+
+# Remove Ensembl version numbers (IMPORTANT)
+rownames(counts_pc) <- gsub("\\..*", "", rownames(counts_pc))
+```
+
+```{r}
+#get mouse protein-coding genes
+
+mart <- useEnsembl(
+  biomart = "genes",
+  dataset = "mmusculus_gene_ensembl"
+)
+
+annotation <- getBM(
+  attributes = c("ensembl_gene_id", "gene_biotype"),
+  filters = "ensembl_gene_id",
+  values = rownames(counts_pc),
+  mart = mart
+)
+
+protein_ids <- annotation %>%
+  filter(gene_biotype == "protein_coding") %>%
+  pull(ensembl_gene_id)
+
+# Subset to protein-coding genes only
+counts_pc <- counts_pc[rownames(counts_pc) %in% protein_ids, ]
+
+dim(counts_pc)
+
+```
+
+```{r}
+sample_names_pc <- colnames(counts_pc)
+
+coldata_pc <- data.frame(
+  row.names = sample_names_pc,
+  age = ifelse(grepl("young", sample_names_pc), "young", "old")
+)
+
+coldata_pc$age <- factor(coldata_pc$age, levels = c("young", "old"))
+
+all(colnames(counts_pc) == rownames(coldata_pc))
+
+```
+
+```{r}
+dds_pc <- DESeqDataSetFromMatrix(
+  countData = counts_pc,
+  colData = coldata_pc,
+  design = ~ age
+)
+
+dds_pc <- dds_pc[rowSums(counts(dds_pc)) >= 20 ]
+
+dim(dds_pc)
+
+dds_pc <- DESeq(dds_pc)
+
+res_pc <- results(dds_pc, contrast = c("age", "old", "young"))
+res_pc <- lfcShrink(dds_pc, coef = "age_old_vs_young", type = "apeglm")
+
+```
+
+
+```{r}
+res_df_pc <- as.data.frame(res_pc)
+res_df_pc <- res_df_pc[order(res_df_pc$padj), ]
+
+sig_genes_pc <- subset(res_df_pc, padj < 0.05)
+```
+
+
+```{r}
+write.csv(res_df_pc, "DESeq2_results_protein_only_mouse.csv", row.names = TRUE)
+write.csv(sig_genes_pc, "DESeq2_sig_genes_protein_only_mouse.csv", row.names = TRUE)
+
+cat("Files exported:\n")
+cat("- DESeq2_results_protein_only_mouse.csv\n")
+cat("- DESeq2_sig_genes_protein_only_mouse.csv\n")
+cat("Current directory is:", getwd(), "\n")
+
+```
+
+
+```{r}
+rld_pc <- rlog(dds_pc, blind = FALSE)
+plotPCA(rld_pc, intgroup = "age")
+print(plotPCA)
+
+```
+
+```{r}
+library(biomaRt)
+
+# Connect to mouse Ensembl
+mart <- useEnsembl(
+  biomart = "genes",
+  dataset = "mmusculus_gene_ensembl"
+)
+
+# Get gene symbols for your DEGs
+gene_map <- getBM(
+  attributes = c("ensembl_gene_id", "mgi_symbol"),
+  filters = "ensembl_gene_id",
+  values = rownames(res_df_pc),
+  mart = mart
+)
+
+# Merge with your DESeq2 results
+res_df_pc$ensembl_gene_id <- rownames(res_df_pc)
+res_df_pc <- merge(res_df_pc, gene_map, by = "ensembl_gene_id", all.x = TRUE)
+
+
+```
+
+
+
+```{r}
+colnames(res_df_pc)
+```
+```{r}
+library(dplyr)
+
+# Step 1: Ensure Ensembl IDs are character and strip version numbers
+res_df_pc$ensembl_gene_id <- as.character(res_df_pc$ensembl_gene_id)
+res_df_pc$ensembl_gene_id <- sub("\\..*$", "", res_df_pc$ensembl_gene_id)
+
+# Step 2: Create a gene_label column (use mgi_symbol if available, else Ensembl ID)
+res_df_pc <- res_df_pc %>%
+  mutate(gene_label = ifelse(!is.na(mgi_symbol) & mgi_symbol != "",
+                             mgi_symbol,
+                             ensembl_gene_id))
+
+# Step 3: Filter significant genes (padj < 0.05)
+sig_genes_pc <- res_df_pc %>%
+  dplyr::filter(!is.na(padj) & padj < 0.05) %>%
+  dplyr::select(gene_label, ensembl_gene_id, log2FoldChange, padj)
+
+
+
+# Step 4: Save or view results
+head(sig_genes_pc)
+write.csv(sig_genes_pc, "significant_genes_pc.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+# Load libraries
+library(ggplot2)
+library(ggrepel)  # for nice non-overlapping labels
+
+# Step 1: Volcano plot
+# Add a column to highlight significant genes
+res_df_pc$significant <- ifelse(!is.na(res_df_pc$padj) & res_df_pc$padj < 0.05, "yes", "no")
+
+# Select top genes to label (e.g., top 10 by padj)
+top_genes <- sig_genes_pc %>%
+  dplyr::arrange(padj) %>%
+  head(10)
+
+# Volcano plot
+volcano <- ggplot(res_df_pc, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("no" = "grey", "yes" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot of PC Significant Genes",
+       x = "log2 Fold Change", y = "-log10(adj. p-value)") +
+  geom_text_repel(data = top_genes,
+                  aes(x = log2FoldChange, y = -log10(padj), label = gene_label),
+                  size = 3, max.overlaps = Inf)
+
+# Show the plot
+print(volcano)
+
+# Optional: save the plot
+ggsave("volcano_plot_pc_annotated.png", volcano, width = 8, height = 6)
+
+# Step 2: Save table of all significant genes
+write.csv(sig_genes_pc, "significant_genes_pc.csv", row.names = FALSE)
+
+# Optional: view top rows
+head(sig_genes_pc)
+
+
+```
+```{r}
+# Ensure gene_label exists
+res_df_pc$gene_label <- ifelse(!is.na(res_df_pc$mgi_symbol) & res_df_pc$mgi_symbol != "",
+                               res_df_pc$mgi_symbol,
+                               res_df_pc$ensembl_gene_id)
+
+# Significant genes in old (upregulated in old)
+sig_genes_old <- res_df_pc[!is.na(res_df_pc$padj) & res_df_pc$padj < 0.05 & res_df_pc$log2FoldChange > 0, ]
+sig_genes_old <- sig_genes_old[, c("gene_label", "ensembl_gene_id", "log2FoldChange", "padj")]
+sig_genes_old <- sig_genes_old[order(sig_genes_old$padj), ]
+
+# Save CSV
+write.csv(sig_genes_old, "significant_genes_old.csv", row.names = FALSE)
+
+# Significant genes in young (upregulated in young)
+sig_genes_young <- res_df_pc[!is.na(res_df_pc$padj) & res_df_pc$padj < 0.05 & res_df_pc$log2FoldChange < 0, ]
+sig_genes_young <- sig_genes_young[, c("gene_label", "ensembl_gene_id", "log2FoldChange", "padj")]
+sig_genes_young <- sig_genes_young[order(sig_genes_young$padj), ]
+
+# Save CSV
+write.csv(sig_genes_young, "significant_genes_young.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+colnames(colData(dds_pc))
+
+```
+
+
+```{r}
+library(DESeq2)
+library(pheatmap)
+
+# --- Step 1: Variance-stabilizing transformation ---
+vsd <- vst(dds_pc, blind = FALSE)
+
+# --- Step 2: Expression matrix for significant genes ---
+sig_gene_ids <- sig_genes_pc$ensembl_gene_id
+expr_mat <- assay(vsd)[sig_gene_ids, ]
+
+# Optional: replace rownames with gene symbols
+rownames(expr_mat) <- sig_genes_pc$gene_label
+
+# --- Step 3: Sample annotation ---
+sample_annot <- as.data.frame(colData(dds_pc)[, "age", drop = FALSE])
+colnames(sample_annot) <- "Age"
+rownames(sample_annot) <- colnames(expr_mat)  # match samples
+
+# --- Step 4: Plot heatmap ---
+pheatmap(expr_mat,
+         scale = "row",             # standardize each gene
+         cluster_rows = TRUE,       # cluster genes
+         cluster_cols = TRUE,       # cluster samples
+         annotation_col = sample_annot,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         fontsize_row = 8,
+         main = "Heatmap of Significant Protein-Coding Genes")
+
+# --- Step 5: Save heatmap ---
+pheatmap(expr_mat,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         filename = "heatmap_sig_genes.png",
+         width = 10,
+         height = 8)
+
+```
+
+```{r}
+library(DESeq2)
+library(pheatmap)
+library(dplyr)
+
+# --- Step 1: Select top 20 significant genes by padj ---
+top20_genes <- sig_genes_pc %>%
+  arrange(padj) %>%
+  head(20)
+
+# --- Step 2: Variance-stabilizing transformation ---
+vsd <- vst(dds_pc, blind = FALSE)
+
+# --- Step 3: Expression matrix for top 20 genes ---
+expr_mat <- assay(vsd)[top20_genes$ensembl_gene_id, ]
+
+# Optional: replace rownames with gene symbols
+rownames(expr_mat) <- top20_genes$gene_label
+
+# --- Step 4: Sample annotation ---
+sample_annot <- as.data.frame(colData(dds_pc)[, "age", drop = FALSE])
+colnames(sample_annot) <- "Age"
+rownames(sample_annot) <- colnames(expr_mat)
+
+# --- Step 5: Plot heatmap ---
+pheatmap(expr_mat,
+         scale = "row",             # standardize each gene
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         fontsize_row = 10,
+         main = "Top 20 Significant Protein-Coding Genes")
+
+# --- Step 6: Save heatmap ---
+pheatmap(expr_mat,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         filename = "heatmap_top20_sig_genes.png",
+         width = 10,
+         height = 8)
+
+```
+
+```{r}
+library(DESeq2)
+library(pheatmap)
+
+# --- Step 1: Variance-stabilizing transformation ---
+vsd <- vst(dds_pc, blind = FALSE)
+
+# --- Step 2: Expression matrix for old ---
+top15_old <- head(sig_genes_old[order(sig_genes_old$padj), ], 15)
+expr_old <- assay(vsd)[top15_old$ensembl_gene_id, ]
+rownames(expr_old) <- top15_old$gene_label
+
+# --- Step 3: Expression matrix for young ---
+top15_young <- head(sig_genes_young[order(sig_genes_young$padj), ], 15)
+expr_young <- assay(vsd)[top15_young$ensembl_gene_id, ]
+rownames(expr_young) <- top15_young$gene_label
+
+# --- Step 4: Sample annotation ---
+sample_annot <- as.data.frame(colData(dds_pc)[, "age", drop = FALSE])
+colnames(sample_annot) <- "Age"
+rownames(sample_annot) <- colnames(vsd)
+
+# --- Step 5: Heatmap for old ---
+pheatmap(expr_old,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         fontsize_row = 10,
+         main = "Top 15 Significant Genes Up in Old")
+
+# Save heatmap
+pheatmap(expr_old,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         filename = "heatmap_top20_old.png",
+         width = 10,
+         height = 8)
+
+# --- Step 6: Heatmap for young ---
+pheatmap(expr_young,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         fontsize_row = 10,
+         main = "Top 15 Significant Genes Up in Young")
+
+# Save heatmap
+pheatmap(expr_young,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         filename = "heatmap_top15_young.png",
+         width = 10,
+         height = 8)
+
+```
+
+```{r}
+library(DESeq2)
+library(pheatmap)
+library(dplyr)
+
+# --- Step 1: Top 15 genes up in young ---
+top15_young <- head(sig_genes_young[order(sig_genes_young$padj), ], 15)
+
+# --- Step 2: Variance-stabilizing transformation ---
+vsd <- vst(dds_pc, blind = FALSE)
+
+# --- Step 3: Expression matrix for top 20 young genes ---
+expr_young <- assay(vsd)[top15_young$ensembl_gene_id, ]
+rownames(expr_young) <- top15_young$gene_label
+
+# --- Step 4: Sample annotation ---
+sample_annot <- as.data.frame(colData(dds_pc)[, "age", drop = FALSE])
+colnames(sample_annot) <- "Age"
+rownames(sample_annot) <- colnames(vsd)
+
+# --- Step 5: Plot heatmap ---
+pheatmap(expr_young,
+         scale = "row",             # standardize genes
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         fontsize_row = 10,
+         main = "Top 15 Significant Genes Up in Young")
+
+# --- Step 6: Save heatmap ---
+pheatmap(expr_young,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sample_annot,
+         filename = "heatmap_top15_young.png",
+         width = 10,
+         height = 8)
+
+```
+
+```{r}
+
+
+
+```
+
+
+
