@@ -1,0 +1,247 @@
+---
+title: "deseq_analysis"
+output: html_document
+date: "2026-02-18"
+---
+
+Load libraries
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(biomaRt)
+library(apeglm)
+```
+
+Import count matrix
+
+```{r}
+counts <- read.csv( "counts_matrix.csv", row.names = 1)
+
+colnames(counts) <- gsub("^X", "", colnames(counts))
+colnames(counts) <- gsub("\\.", "-", colnames(counts))
+colnames(counts) <- gsub("2O", "20", colnames(counts))
+
+counts[is.na(counts)] <- 0
+counts <- round(counts)
+
+rownames(counts) <- gsub("\\..*", "", rownames(counts))
+```
+
+Create sample metadata
+
+```{r}
+sample_names <- colnames(counts)
+
+coldata <- data.frame(
+row.names = sample_names,
+age = ifelse(grepl("young", sample_names), "young", "old")
+)
+
+coldata$age <- factor(coldata$age, levels = c("young","old"))
+
+all(colnames(counts) == rownames(coldata))
+```
+
+DESeq2 analysis without protein-coding filtering
+
+```{r}
+dds_all <- DESeqDataSetFromMatrix(
+countData = counts,
+colData = coldata,
+design = ~ age
+)
+
+dds_all <- dds_all[rowSums(counts(dds_all)) >= 20, ]
+
+dds_all <- DESeq(dds_all)
+
+res_all <- results(dds_all, contrast = c("age","old","young"))
+
+res_all <- lfcShrink(
+dds_all,
+coef="age_old_vs_young",
+type="apeglm"
+)
+
+res_df_all <- as.data.frame(res_all)
+res_df_all$ensembl_gene_id <- rownames(res_df_all)
+```
+
+Add gene symbols
+
+```{r}
+mart <- useEnsembl(
+biomart="genes",
+dataset="mmusculus_gene_ensembl"
+)
+
+gene_map <- getBM(
+attributes=c("ensembl_gene_id","mgi_symbol"),
+filters="ensembl_gene_id",
+values=res_df_all$ensembl_gene_id,
+mart=mart
+)
+
+res_df_all <- merge(res_df_all,gene_map,by="ensembl_gene_id",all.x=TRUE)
+
+res_df_all <- res_df_all %>%
+mutate(
+gene_label = ifelse(!is.na(mgi_symbol) & mgi_symbol!="",
+mgi_symbol,
+ensembl_gene_id)
+)
+```
+
+Filter significant genes
+
+```{r}
+sig_all <- res_df_all %>%
+filter(!is.na(padj) & padj < 0.05) %>%
+select(gene_label,ensembl_gene_id,log2FoldChange,padj)
+```
+
+Expression filtering (>10 counts in ≥3 samples per group)
+
+```{r}
+
+counts_matrix <- counts(dds_all)
+
+young_samples <- coldata$age == "young"
+old_samples <- coldata$age == "old"
+
+keep <- rowSums(counts_matrix[, young_samples] > 10) >= 3 &
+        rowSums(counts_matrix[, old_samples] > 10) >= 3
+
+dds_all <- dds_all[keep, ]
+
+```
+
+Genes upregulated in old
+
+```{r}
+sig_all_old <- res_df_all %>%
+filter(!is.na(padj) & padj < 0.05 & log2FoldChange > 0) %>%
+select(gene_label,ensembl_gene_id,log2FoldChange,padj) %>%
+arrange(padj)
+```
+
+Genes upregulated in young
+
+```{r}
+sig_all_young <- res_df_all %>%
+filter(!is.na(padj) & padj < 0.05 & log2FoldChange < 0) %>%
+select(gene_label,ensembl_gene_id,log2FoldChange,padj) %>%
+arrange(padj)
+```
+
+Export results for all genes
+
+```{r}
+write.csv(res_df_all,"DESeq2_results_all_genes.csv",row.names=FALSE)
+write.csv(sig_all,"significant_genes_all.csv",row.names=FALSE)
+write.csv(sig_all_old,"significant_genes_old_all.csv",row.names=FALSE)
+write.csv(sig_all_young,"significant_genes_young_all.csv",row.names=FALSE)
+```
+
+Protein-coding gene filtering
+
+```{r}
+annotation <- getBM(
+attributes=c("ensembl_gene_id","gene_biotype"),
+filters="ensembl_gene_id",
+values=rownames(counts),
+mart=mart
+)
+
+protein_ids <- annotation %>%
+filter(gene_biotype=="protein_coding") %>%
+pull(ensembl_gene_id)
+
+counts_pc <- counts[rownames(counts) %in% protein_ids, ]
+```
+
+DESeq2 analysis for protein-coding genes
+
+```{r}
+dds_pc <- DESeqDataSetFromMatrix(
+countData=counts_pc,
+colData=coldata,
+design=~age
+)
+
+dds_pc <- dds_pc[rowSums(counts(dds_pc)) >= 20, ]
+
+dds_pc <- DESeq(dds_pc)
+
+res_pc <- results(dds_pc,contrast=c("age","old","young"))
+
+res_pc <- lfcShrink(
+dds_pc,
+coef="age_old_vs_young",
+type="apeglm"
+)
+
+res_df_pc <- as.data.frame(res_pc)
+res_df_pc$ensembl_gene_id <- rownames(res_df_pc)
+
+res_df_pc <- merge(res_df_pc,gene_map,by="ensembl_gene_id",all.x=TRUE)
+
+res_df_pc <- res_df_pc %>%
+mutate(
+gene_label = ifelse(!is.na(mgi_symbol) & mgi_symbol!="",
+mgi_symbol,
+ensembl_gene_id)
+)
+```
+
+Filter significant protein-coding genes
+
+```{r}
+sig_pc <- res_df_pc %>%
+filter(!is.na(padj) & padj < 0.05) %>%
+select(gene_label,ensembl_gene_id,log2FoldChange,padj)
+```
+
+Expression filtering for protein-coding genes
+
+```{r}
+
+counts_matrix <- counts(dds_pc)
+
+young_samples <- coldata$age == "young"
+old_samples <- coldata$age == "old"
+
+keep <- rowSums(counts_matrix[, young_samples] > 10) >= 3 &
+        rowSums(counts_matrix[, old_samples] > 10) >= 3
+
+dds_pc <- dds_pc[keep, ]
+
+```
+
+Protein-coding genes upregulated in old
+
+```{r}
+sig_pc_old <- res_df_pc %>%
+filter(!is.na(padj) & padj < 0.05 & log2FoldChange > 0) %>%
+select(gene_label,ensembl_gene_id,log2FoldChange,padj) %>%
+arrange(padj)
+```
+
+Protein-coding genes upregulated in young
+
+```{r}
+sig_pc_young <- res_df_pc %>%
+filter(!is.na(padj) & padj < 0.05 & log2FoldChange < 0) %>%
+select(gene_label,ensembl_gene_id,log2FoldChange,padj) %>%
+arrange(padj)
+```
+
+Export protein-coding results
+
+```{r}
+write.csv(res_df_pc,"DESeq2_results_protein_coding.csv",row.names=FALSE)
+write.csv(sig_pc,"significant_genes_protein_coding.csv",row.names=FALSE)
+write.csv(sig_pc_old,"significant_genes_old_protein_coding.csv",row.names=FALSE)
+write.csv(sig_pc_young,"significant_genes_young_protein_coding.csv",row.names=FALSE)
+```
