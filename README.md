@@ -22,7 +22,7 @@ This repository contains scripts, data, and results for a multi-omics study of o
 
 ### Instructions
 
-1. Set up R environment: `conda env create -f environment/r_environment.yml`
+1. Set up R environment: 
 2. Run scripts in order:
    - `01_fastqc.sh`
    - `02_trimming_cutadapt.sh`
@@ -32,5 +32,5 @@ This repository contains scripts, data, and results for a multi-omics study of o
    - `06_deseq2_analysis.R`
    - `07_visualisations.R`
    - `08_go_enrichment.R`
-   - `09_gsea_analysis.R`
+
 3. Check results in `results/` folder.
