@@ -53,14 +53,14 @@ dev.off()
 ```
 
 Multi_omics_integrated tables heatmap
+
 ```{r}
+
 library(tidyverse)
 library(pheatmap)
 library(RColorBrewer)
 
-# ------------------------
-# 1️⃣ Read CSVs
-# ------------------------
+
 soluble <- read_csv("multiomics_results/multi_omics_significant_soluble.csv", show_col_types = FALSE)
 cellular <- read_csv("multiomics_results/multi_omics_significant_cellular.csv", show_col_types = FALSE)
 
@@ -69,9 +69,7 @@ sol_cols <- c("mean_log2_D14", "mean_log2_D21", "mean_log2_M03",
               "mean_log2_M06", "mean_log2_M12", "mean_log2_M18")
 cell_cols <- sol_cols
 
-# ------------------------
-# 2️⃣ Aggregate duplicates and rename
-# ------------------------
+
 soluble_agg <- soluble %>%
   group_by(gene_symbol) %>%
   summarise(across(all_of(sol_cols), mean, na.rm = TRUE)) %>%
@@ -84,9 +82,7 @@ cellular_agg <- cellular %>%
   ungroup() %>%
   rename_with(~sub("mean_log2_", "", .x), all_of(cell_cols))
 
-# ------------------------
-# 3️⃣ Merge fractions
-# ------------------------
+
 combined <- inner_join(soluble_agg, cellular_agg, by = "gene_symbol", suffix = c("_sol", "_cell"))
 
 combined$variance <- apply(combined[,-1], 1, var, na.rm = TRUE)
@@ -96,9 +92,7 @@ top_genes <- combined %>%
   slice_head(n = 30) %>%
   dplyr::select(-variance) %>%
   as.data.frame()
-# ------------------------
-# 5️⃣ Attach GO Biological Process annotations
-# ------------------------
+
 top_genes_go <- top_genes %>%
   dplyr::left_join(
     as.data.frame(soluble) %>%
@@ -108,12 +102,9 @@ top_genes_go <- top_genes %>%
   ) %>%
   as.data.frame()
 
-# Simplify GO annotation: first term if multiple
 top_genes_go$GO_BP_short <- sapply(strsplit(top_genes_go$go_biological_process, ";"), `[`, 1)
 
-# ------------------------
-# 6️⃣ Prepare matrix and scale
-# ------------------------
+
 mat <- top_genes_go %>%
   column_to_rownames("gene_symbol") %>%
   dplyr::select(dplyr::ends_with("_sol"), dplyr::ends_with("_cell")) %>%
@@ -126,9 +117,7 @@ mat_scaled_t <- t(mat_scaled)
 sample_order <- c("D14_sol", "D21_sol", "M03_sol", "M06_sol", "M12_sol", "M18_sol",
                   "D14_cell", "D21_cell", "M03_cell", "M06_cell", "M12_cell", "M18_cell")
 mat_scaled_t <- mat_scaled_t[sample_order, ]
-# ------------------------
-# 7️⃣ Prepare annotations
-# ------------------------
+
 # Samples/timepoints annotation (rows now - on y-axis)
 annotation_row <- data.frame(
   Fraction = rep(c("Soluble","Cellular"), each = 6)
@@ -141,14 +130,11 @@ annotation_col <- data.frame(
 )
 rownames(annotation_col) <- colnames(mat_scaled_t)
 
-# ------------------------
-# 8️⃣ Heatmap color palette
+
 # ------------------------
 pal <- colorRampPalette(rev(brewer.pal(11, "RdBu")))(100)
 
-# ------------------------
-# 9️⃣ Draw and export heatmap
-# ------------------------
+
 pheatmap(
   mat_scaled_t,
   cluster_rows = FALSE,    # ✅ Set to FALSE to preserve chronological order
@@ -167,6 +153,7 @@ pheatmap(
 )
 
 ```
+
 
 PCA plots
 
