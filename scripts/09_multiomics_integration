@@ -1,0 +1,92 @@
+---
+title: "multiomics_integration"
+output: html_document
+date: "2026-03-16"
+---
+Cellular
+
+```{r}
+library(tidyverse)
+
+# Load pre-cleaned data (cleaning done separately)
+prot_clean <- read_csv("cellular_proteomics_clean_v2.csv", show_col_types = FALSE)
+rna <- read_csv("DESeq2_results_expr_filtered.csv", show_col_types = FALSE) %>%
+  rename(gene_symbol = mgi_symbol) %>%
+  rename(
+    rna_baseMean   = baseMean,
+    rna_log2FC     = log2FoldChange,
+    rna_lfcSE      = lfcSE,
+    rna_pvalue     = pvalue,
+    rna_padj       = padj,
+    rna_ensembl_id = ensembl_gene_id,
+    rna_gene_label = gene_label
+  ) %>%
+  select(-`...1`)
+
+# Inner join to keep only genes with BOTH proteomics & RNA data
+integrated <- prot_clean %>%
+  filter(!is.na(gene_symbol) & gene_symbol != "") %>%
+  inner_join(rna, by = "gene_symbol", relationship = "many-to-many") %>%
+  # De-duplicate: if multiple RNA rows map to same gene, keep best (lowest padj)
+  group_by(gene_symbol, protein_groups) %>%
+  slice_min(order_by = rna_padj, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+write_csv(integrated, "multi_omics_integrated_cellular.csv", na = "")
+message("✔ Wrote multi_omics_integrated_cellular.csv (", nrow(integrated), " rows)")
+
+
+integrated_sig <- integrated %>%
+  filter(
+    (`is.significant.M03-D14` == TRUE | `is.significant.M18-M03` == TRUE) &
+    rna_padj < 0.05 & !is.na(rna_padj)
+  )
+
+write_csv(integrated_sig, "multi_omics_significant_cellular.csv", na = "")
+message("✔ Wrote multi_omics_significant_cellular.csv (", nrow(integrated_sig), " rows)")
+```
+
+Soluble
+
+```{r}
+library(tidyverse)
+
+# Load pre-cleaned data (cleaning done separately)
+prot_clean <- read_csv("soluble_proteomics_clean_v2.csv", show_col_types = FALSE)
+rna <- read_csv("DESeq2_results_expr_filtered.csv", show_col_types = FALSE) %>%
+  rename(gene_symbol = mgi_symbol) %>%
+  rename(
+    rna_baseMean   = baseMean,
+    rna_log2FC     = log2FoldChange,
+    rna_lfcSE      = lfcSE,
+    rna_pvalue     = pvalue,
+    rna_padj       = padj,
+    rna_ensembl_id = ensembl_gene_id,
+    rna_gene_label = gene_label
+  ) %>%
+  select(-`...1`)
+
+
+# Inner join to keep only genes with BOTH proteomics & RNA data
+integrated <- prot_clean %>%
+  filter(!is.na(gene_symbol) & gene_symbol != "") %>%
+  inner_join(rna, by = "gene_symbol", relationship = "many-to-many") %>%
+  # De-duplicate: if multiple RNA rows map to same gene, keep best (lowest padj)
+  group_by(gene_symbol, protein_groups) %>%
+  slice_min(order_by = rna_padj, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+write_csv(integrated, "multi_omics_integrated_soluble.csv", na = "")
+message("✔ Wrote multi_omics_integrated_soluble.csv (", nrow(integrated), " rows)")
+
+
+integrated_sig <- integrated %>%
+  filter(
+    (`is.significant.M03-D14` == TRUE | `is.significant.M18-M03` == TRUE) &
+    rna_padj < 0.05 & !is.na(rna_padj)
+  )
+
+write_csv(integrated_sig, "multi_omics_significant_soluble.csv", na = "")
+message("✔ Wrote multi_omics_significant_soluble.csv (", nrow(integrated_sig), " rows)")
+```
+

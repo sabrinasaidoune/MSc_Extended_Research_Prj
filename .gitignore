@@ -1,0 +1,18 @@
+# Raw and large data
+data/raw/
+data/trimmed/
+proteomics/raw_dia_files/
+
+# Temporary/processed results
+results/qc/
+results/deseq2/
+results/plots/
+results/enrichment/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs and intermediate files
+*.log
+*.tmp
